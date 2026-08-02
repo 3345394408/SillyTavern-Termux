@@ -5,7 +5,10 @@
 
 set -u
 
+SCRIPT_VERSION="1.1.0"
+SCRIPT_BUILD=2026080301
 REPO="https://github.com/SillyTavern/SillyTavern.git"
+SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 ST_DIR="${HOME}/SillyTavern"
 BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
@@ -50,6 +53,47 @@ install_manager() {
     else
         chmod 755 "$MANAGER"
     fi
+}
+
+check_self_update() {
+    [[ "${ST_MANAGER_SKIP_UPDATE:-0}" == "1" ]] && return 0
+    command -v curl >/dev/null 2>&1 || return 0
+
+    local tmp remote_build source_file
+    tmp="$(mktemp "${TMPDIR:-${PREFIX:-/tmp}/tmp}/st-manager-update.XXXXXX" 2>/dev/null)" || return 0
+
+    if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+        -H 'Cache-Control: no-cache' \
+        "${SELF_UPDATE_URL}?v=$(date +%s)" -o "$tmp"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    remote_build="$(sed -n 's/^SCRIPT_BUILD=\([0-9][0-9]*\)$/\1/p' "$tmp" | head -n 1)"
+    source_file="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+
+    if [[ ! "$remote_build" =~ ^[0-9]+$ ]] \
+        || [[ "$(head -n 1 "$tmp")" != '#!/usr/bin/env bash' ]] \
+        || ! bash -n "$tmp"; then
+        rm -f "$tmp"
+        warn "管理器在线更新文件校验失败，继续使用当前版本。"
+        return 0
+    fi
+
+    # 只升级不降级；构建号相同时也比较内容，避免遗漏小修复。
+    if (( 10#$remote_build > 10#$SCRIPT_BUILD )) \
+        || { (( 10#$remote_build == 10#$SCRIPT_BUILD )) && ! cmp -s "$tmp" "$source_file"; }; then
+        mkdir -p "$BIN_DIR"
+        cp "$tmp" "${MANAGER}.update" || { rm -f "$tmp"; return 0; }
+        chmod 755 "${MANAGER}.update"
+        mv -f "${MANAGER}.update" "$MANAGER"
+        rm -f "$tmp"
+        ok "管理器已自动更新，正在重新启动..."
+        export ST_MANAGER_SKIP_UPDATE=1
+        exec "$MANAGER" "$@"
+    fi
+
+    rm -f "$tmp"
 }
 
 remove_auto_block_from() {
@@ -361,6 +405,7 @@ show_version() {
     tag="$(git -C "$ST_DIR" describe --tags --exact-match 2>/dev/null || true)"
     commit="$(git -C "$ST_DIR" rev-parse --short HEAD 2>/dev/null || true)"
     printf "安装目录：%s\n" "$ST_DIR"
+    printf "管理器版本：%s（构建 %s）\n" "$SCRIPT_VERSION" "$SCRIPT_BUILD"
     printf "当前版本：%s\n" "${tag:-${branch:-未知}}"
     printf "Git 提交：%s\n" "$commit"
     printf "Node.js：%s\n" "$(node -v 2>/dev/null || echo 未安装)"
@@ -380,6 +425,7 @@ main_menu() {
         printf "%b" "$CYAN"
         printf "========================================\n"
         printf "       SillyTavern Termux 管理器         \n"
+        printf "               v%s\n" "$SCRIPT_VERSION"
         printf "========================================\n"
         printf "%b" "$RESET"
         printf "  1) 启动 SillyTavern\n"
@@ -410,6 +456,9 @@ main() {
         error "请在 Android Termux 中运行此脚本。"
         exit 1
     fi
+
+    # 每次打开管理器时自动检查 GitHub 上的新版本。
+    check_self_update "$@"
 
     install_manager || {
         error "管理脚本安装失败。"

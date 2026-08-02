@@ -5,11 +5,13 @@
 
 set -u
 
-SCRIPT_VERSION="1.2.0"
-SCRIPT_BUILD=2026080302
+SCRIPT_VERSION="1.3.0"
+SCRIPT_BUILD=2026080303
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
-ST_DIR="${HOME}/SillyTavern"
+EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
+PREFERRED_ST_DIR="${EXTERNAL_STORAGE_ROOT}/SillyTavern"
+ST_DIR="$PREFERRED_ST_DIR"
 BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
 BASHRC="${HOME}/.bashrc"
@@ -223,7 +225,8 @@ install_node_modules() {
     (
         cd "$ST_DIR" || exit 1
         export NODE_ENV=production
-        npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --omit=dev --ignore-scripts
+        npm install --no-save --no-audit --no-fund --loglevel=error --no-progress \
+            --omit=dev --ignore-scripts --no-bin-links
     )
 }
 
@@ -232,14 +235,41 @@ has_sillytavern_files() {
 }
 
 valid_repo() {
-    has_sillytavern_files \
-        && command -v git >/dev/null 2>&1 \
-        && git -C "$ST_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1
+    has_sillytavern_files || return 1
+    command -v git >/dev/null 2>&1 || return 1
+    if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq "$ST_DIR"; then
+        git config --global --add safe.directory "$ST_DIR" >/dev/null 2>&1 || true
+    fi
+    git -C "$ST_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
 remember_install_dir() {
     mkdir -p "$STATE_DIR"
     printf '%s\n' "$ST_DIR" > "$INSTALL_DIR_FILE"
+}
+
+prepare_install_storage() {
+    [[ "$ST_DIR" == "$EXTERNAL_STORAGE_ROOT"* ]] || return 0
+
+    if [[ ! -d "$EXTERNAL_STORAGE_ROOT" ]]; then
+        error "没有检测到外置存储卡：$EXTERNAL_STORAGE_ROOT"
+        error "请确认存储卡已挂载，卷标路径没有变化。"
+        return 1
+    fi
+
+    if [[ ! -w "$EXTERNAL_STORAGE_ROOT" ]]; then
+        warn "Termux 尚未取得外置存储权限，正在请求权限..."
+        if command -v termux-setup-storage >/dev/null 2>&1; then
+            termux-setup-storage || true
+        fi
+        sleep 2
+    fi
+
+    if [[ ! -w "$EXTERNAL_STORAGE_ROOT" ]]; then
+        error "无法写入 $EXTERNAL_STORAGE_ROOT"
+        error "请在 Android 设置中允许 Termux 访问文件/所有文件，然后重新运行。"
+        return 1
+    fi
 }
 
 detect_install_dir() {
@@ -257,7 +287,13 @@ detect_install_dir() {
         fi
     fi
 
-    for candidate in "$ST_DIR" "$HOME/SillyTavern" "$HOME/sillytavern"; do
+    for candidate in \
+        "$ST_DIR" \
+        "$PREFERRED_ST_DIR" \
+        "$EXTERNAL_STORAGE_ROOT" \
+        "$EXTERNAL_STORAGE_ROOT/sillytavern" \
+        "$HOME/SillyTavern" \
+        "$HOME/sillytavern"; do
         ST_DIR="$candidate"
         if has_sillytavern_files; then
             remember_install_dir
@@ -282,7 +318,7 @@ detect_install_dir() {
         return 0
     fi
 
-    ST_DIR="$HOME/SillyTavern"
+    ST_DIR="$PREFERRED_ST_DIR"
     return 1
 }
 
@@ -311,6 +347,7 @@ install_or_switch() {
 
     install_dependencies || return 1
     detect_install_dir || true
+    prepare_install_storage || return 1
 
     if [[ -e "$ST_DIR" ]] && ! valid_repo; then
         error "$ST_DIR 已存在，但不是 Git 仓库。请先将该目录改名后重试。"
@@ -319,7 +356,10 @@ install_or_switch() {
 
     if ! valid_repo; then
         info "正在从官方仓库安装版本：$ref"
-        git clone --depth 1 --branch "$ref" "$REPO" "$ST_DIR" || return 1
+        git -c core.fileMode=false -c core.symlinks=false \
+            clone --depth 1 --branch "$ref" "$REPO" "$ST_DIR" || return 1
+        git -C "$ST_DIR" config core.fileMode false || true
+        git -C "$ST_DIR" config core.symlinks false || true
     else
         info "正在将已有安装切换到：$ref"
         stash_changes || return 1
@@ -458,11 +498,18 @@ start_sillytavern() {
         detect_install_dir || true
     fi
 
+    if [[ ! -d "$ST_DIR/node_modules" ]]; then
+        warn "检测到程序文件，但缺少 Node.js 依赖，正在补充安装。"
+        install_dependencies || return
+        install_node_modules || return
+    fi
+
     info "即将启动 SillyTavern；停止服务请按 Ctrl+C。"
     if command -v termux-open-url >/dev/null 2>&1; then
         ( sleep 6; termux-open-url "http://127.0.0.1:8000" >/dev/null 2>&1 || true ) &
     fi
-    (cd "$ST_DIR" && bash start.sh)
+    # 外置存储通常不支持可执行权限，因此直接由 Termux 内部的 Node.js 启动。
+    (cd "$ST_DIR" && node server.js)
 }
 
 update_sillytavern() {

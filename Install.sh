@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.3.3"
-SCRIPT_BUILD=2026080306
+SCRIPT_VERSION="1.4.0"
+SCRIPT_BUILD=2026080308
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
@@ -24,6 +24,8 @@ INSTALL_DIR_FILE="${STATE_DIR}/install-dir"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
 AUTO_END="# <<< SillyTavern Termux Manager <<<"
 RUN_FROM_INSTALLER=0
+UPDATE_STATUS="等待检查"
+SELF_UPDATE_ARGS=()
 
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
@@ -123,16 +125,27 @@ install_manager() {
 }
 
 check_self_update() {
-    [[ "${ST_MANAGER_SKIP_UPDATE:-0}" == "1" ]] && return 0
-    command -v curl >/dev/null 2>&1 || return 0
+    local force="${1:-0}"
+    if [[ "${ST_MANAGER_SKIP_UPDATE:-0}" == "1" && "$force" != "1" ]]; then
+        UPDATE_STATUS="刚刚自动更新到 v${SCRIPT_VERSION}"
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        UPDATE_STATUS="无法检查（缺少 curl）"
+        return 0
+    fi
 
     local tmp remote_build source_file
-    tmp="$(mktemp "${TMPDIR:-${PREFIX:-/tmp}/tmp}/st-manager-update.XXXXXX" 2>/dev/null)" || return 0
+    tmp="$(mktemp "${TMPDIR:-${PREFIX:-/tmp}/tmp}/st-manager-update.XXXXXX" 2>/dev/null)" || {
+        UPDATE_STATUS="检查失败（无法创建临时文件）"
+        return 0
+    }
 
     if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
         -H 'Cache-Control: no-cache' \
         "${SELF_UPDATE_URL}?v=$(date +%s)" -o "$tmp"; then
         rm -f "$tmp"
+        UPDATE_STATUS="检查失败（网络错误）"
         return 0
     fi
 
@@ -144,6 +157,7 @@ check_self_update() {
         || ! bash -n "$tmp"; then
         rm -f "$tmp"
         warn "管理器在线更新文件校验失败，继续使用当前版本。"
+        UPDATE_STATUS="检查失败（文件校验错误）"
         return 0
     fi
 
@@ -157,10 +171,15 @@ check_self_update() {
         rm -f "$tmp"
         ok "管理器已自动更新，正在重新启动..."
         export ST_MANAGER_SKIP_UPDATE=1
-        exec "$MANAGER" "$@"
+        exec "$MANAGER" "${SELF_UPDATE_ARGS[@]}"
     fi
 
     rm -f "$tmp"
+    if (( 10#$remote_build < 10#$SCRIPT_BUILD )); then
+        UPDATE_STATUS="本地版本较新 v${SCRIPT_VERSION}"
+    else
+        UPDATE_STATUS="已是最新 v${SCRIPT_VERSION}"
+    fi
 }
 
 remove_auto_block_from() {
@@ -279,7 +298,9 @@ install_node_modules() {
 }
 
 has_sillytavern_files() {
-    [[ -f "$ST_DIR/server.js" && -f "$ST_DIR/package.json" && -f "$ST_DIR/start.sh" ]]
+    [[ -f "$ST_DIR/server.js" \
+        && -f "$ST_DIR/package.json" \
+        && -f "$ST_DIR/public/index.html" ]]
 }
 
 valid_repo() {
@@ -358,7 +379,7 @@ detect_install_dir() {
                 -type f -name server.js -print 2>/dev/null \
                 | while IFS= read -r candidate; do
                     candidate="${candidate%/server.js}"
-                    if [[ -f "$candidate/start.sh" && -f "$candidate/package.json" ]]; then
+                    if [[ -f "$candidate/package.json" && -f "$candidate/public/index.html" ]]; then
                         printf '%s\n' "$candidate"
                         break
                     fi
@@ -620,6 +641,13 @@ toggle_auto_menu() {
     fi
 }
 
+manual_self_update() {
+    UPDATE_STATUS="正在检查..."
+    SELF_UPDATE_ARGS=()
+    check_self_update 1
+    ok "$UPDATE_STATUS"
+}
+
 main_menu() {
     while true; do
         clear 2>/dev/null || true
@@ -629,6 +657,12 @@ main_menu() {
         printf "               v%s\n" "$SCRIPT_VERSION"
         printf "========================================\n"
         printf "%b" "$RESET"
+        printf "  脚本更新：%s\n" "$UPDATE_STATUS"
+        if has_sillytavern_files; then
+            printf "  酒馆目录：%s\n\n" "$ST_DIR"
+        else
+            printf "  酒馆目录：未检测到\n\n"
+        fi
         printf "  1) 启动 SillyTavern\n"
         printf "  2) 安装 / 切换版本\n"
         printf "  3) 更新当前版本\n"
@@ -638,8 +672,9 @@ main_menu() {
         else
             printf "  5) 开启 Termux 自动菜单 [当前：关]\n"
         fi
+        printf "  6) 立即检查管理器更新\n"
         printf "  0) 退出到 Termux 命令行\n\n"
-        read_menu_key "请选择 [0-5]（自动确认）："
+        read_menu_key "请选择 [0-6]（自动确认）："
         choice="$MENU_INPUT"
         case "$choice" in
             1) start_sillytavern; pause_menu ;;
@@ -647,8 +682,9 @@ main_menu() {
             3) update_sillytavern; pause_menu ;;
             4) show_version; pause_menu ;;
             5) toggle_auto_menu; pause_menu ;;
+            6) manual_self_update; pause_menu ;;
             0) break ;;
-            *) warn "请输入 0 到 5。"; sleep 1 ;;
+            *) warn "请输入 0 到 6。"; sleep 1 ;;
         esac
     done
 }
@@ -660,13 +696,15 @@ main() {
     fi
 
     # 每次打开管理器时自动检查 GitHub 上的新版本。
-    check_self_update "$@"
+    SELF_UPDATE_ARGS=("$@")
+    check_self_update 0
 
     install_manager || {
         error "管理脚本安装失败。"
         exit 1
     }
     export PATH="$BIN_DIR:$PATH"
+    detect_install_dir || true
 
     # 重新执行下载的 Install.sh 时也会主动修复自动菜单；从已安装的
     # st-manager 启动时仍尊重用户在菜单中的开关设置。

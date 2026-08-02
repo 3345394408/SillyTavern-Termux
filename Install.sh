@@ -222,12 +222,40 @@ install_or_switch() {
     ok "SillyTavern $ref 安装完成。"
 }
 
-list_release_tags() {
-    git ls-remote --tags --refs "$REPO" 2>/dev/null \
-        | awk -F/ '{print $3}' \
-        | grep -E '^[vV]?[0-9]+([.][0-9]+){2}$' \
+filter_supported_tags() {
+    grep -E '^[vV]?[0-9]+([.][0-9]+){2}$' \
         | awk -F. '{ major=$1; sub(/^[vV]/, "", major); if (major > 1 || (major == 1 && $2 >= 11)) print }' \
-        | sort -Vr
+        | sort -Vr \
+        | awk '!seen[$0]++'
+}
+
+list_release_tags() {
+    local tags=""
+
+    # 首次运行时可能还没安装 git，因此优先使用安装指令已有的 curl。
+    if command -v curl >/dev/null 2>&1; then
+        tags="$(
+            curl -fsSL --retry 2 --connect-timeout 15 --max-time 30 \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'User-Agent: SillyTavern-Termux-Manager' \
+                'https://api.github.com/repos/SillyTavern/SillyTavern/tags?per_page=100' 2>/dev/null \
+                | awk -F'"' '/"name"[[:space:]]*:/ {print $4}' \
+                | filter_supported_tags
+        )"
+    fi
+
+    # GitHub API 不通时再尝试 Git，并强制 HTTP/1.1 提高 Termux 网络兼容性。
+    if [[ -z "$tags" ]] && command -v git >/dev/null 2>&1; then
+        tags="$(
+            git -c http.version=HTTP/1.1 ls-remote --tags --refs "$REPO" 2>/dev/null \
+                | awk -F/ '{print $3}' \
+                | filter_supported_tags
+        )"
+    fi
+
+    if [[ -n "$tags" ]]; then
+        printf '%s\n' "$tags"
+    fi
 }
 
 choose_tag() {

@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.3.2"
-SCRIPT_BUILD=2026080305
+SCRIPT_VERSION="1.3.3"
+SCRIPT_BUILD=2026080306
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
@@ -321,7 +321,7 @@ prepare_install_storage() {
 }
 
 detect_install_dir() {
-    local saved="" candidate="" found=""
+    local saved="" candidate="" found="" search_root=""
 
     if [[ -f "$INSTALL_DIR_FILE" ]]; then
         IFS= read -r saved < "$INSTALL_DIR_FILE" || true
@@ -349,22 +349,28 @@ detect_install_dir() {
         fi
     done
 
-    # 兼容安装在其他子目录或由旧脚本创建的目录。
-    found="$(
-        find "$HOME" -maxdepth 3 -type f -name server.js 2>/dev/null \
-            | while IFS= read -r candidate; do
-                candidate="${candidate%/server.js}"
-                if [[ -f "$candidate/start.sh" && -f "$candidate/package.json" ]]; then
-                    printf '%s\n' "$candidate"
-                    break
-                fi
-            done
-    )"
-    if [[ -n "$found" ]]; then
-        ST_DIR="$found"
-        remember_install_dir
-        return 0
-    fi
+    # 兼容旧脚本创建的任意目录名，并递归扫描指定外置存储卡。
+    for search_root in "$HOME" "$EXTERNAL_STORAGE_ROOT"; do
+        [[ -d "$search_root" ]] || continue
+        found="$(
+            find "$search_root" -maxdepth 7 \
+                -type d -name node_modules -prune -o \
+                -type f -name server.js -print 2>/dev/null \
+                | while IFS= read -r candidate; do
+                    candidate="${candidate%/server.js}"
+                    if [[ -f "$candidate/start.sh" && -f "$candidate/package.json" ]]; then
+                        printf '%s\n' "$candidate"
+                        break
+                    fi
+                done
+        )"
+        if [[ -n "$found" ]]; then
+            ST_DIR="$found"
+            remember_install_dir
+            ok "已自动识别 SillyTavern：$ST_DIR"
+            return 0
+        fi
+    done
 
     ST_DIR="$DEFAULT_ST_DIR"
     return 1

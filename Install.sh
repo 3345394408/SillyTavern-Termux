@@ -11,6 +11,7 @@ BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
 BASHRC="${HOME}/.bashrc"
 BASH_PROFILE="${HOME}/.bash_profile"
+ZSHRC="${HOME}/.zshrc"
 STATE_DIR="${HOME}/.config/st-manager"
 INITIALIZED="${STATE_DIR}/initialized"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
@@ -51,20 +52,27 @@ install_manager() {
     fi
 }
 
-remove_auto_block() {
-    [[ -f "$BASHRC" ]] || return 0
-    local tmp="${BASHRC}.st-manager.tmp"
+remove_auto_block_from() {
+    local rc_file="$1"
+    [[ -f "$rc_file" ]] || return 0
+    local tmp="${rc_file}.st-manager.tmp"
     awk -v begin="$AUTO_BEGIN" -v end="$AUTO_END" '
         $0 == begin { skipping=1; next }
         $0 == end   { skipping=0; next }
         !skipping   { print }
-    ' "$BASHRC" > "$tmp" && mv -f "$tmp" "$BASHRC"
+    ' "$rc_file" > "$tmp" && mv -f "$tmp" "$rc_file"
 }
 
-enable_auto_menu() {
-    touch "$BASHRC"
-    remove_auto_block
-    cat >> "$BASHRC" <<'EOF'
+remove_auto_block() {
+    remove_auto_block_from "$BASHRC"
+    remove_auto_block_from "$ZSHRC"
+}
+
+append_auto_block() {
+    local rc_file="$1"
+    touch "$rc_file"
+    remove_auto_block_from "$rc_file"
+    cat >> "$rc_file" <<'EOF'
 
 # >>> SillyTavern Termux Manager >>>
 if [[ $- == *i* ]] && [[ -t 0 ]] && [[ -x "$HOME/.local/bin/st-manager" ]] && [[ -z "${ST_MANAGER_ACTIVE:-}" ]]; then
@@ -72,6 +80,11 @@ if [[ $- == *i* ]] && [[ -t 0 ]] && [[ -x "$HOME/.local/bin/st-manager" ]] && [[
 fi
 # <<< SillyTavern Termux Manager <<<
 EOF
+}
+
+enable_auto_menu() {
+    append_auto_block "$BASHRC"
+    append_auto_block "$ZSHRC"
 
     # Termux 可能以 login shell 启动；确保它会读取 ~/.bashrc。
     ensure_bash_profile_loader
@@ -85,7 +98,8 @@ disable_auto_menu() {
 }
 
 auto_menu_enabled() {
-    [[ -f "$BASHRC" ]] && grep -Fq "$AUTO_BEGIN" "$BASHRC"
+    { [[ -f "$BASHRC" ]] && grep -Fq "$AUTO_BEGIN" "$BASHRC"; } ||
+    { [[ -f "$ZSHRC" ]] && grep -Fq "$AUTO_BEGIN" "$ZSHRC"; }
 }
 
 ensure_bash_profile_loader() {

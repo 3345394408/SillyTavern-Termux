@@ -225,9 +225,9 @@ install_or_switch() {
 list_release_tags() {
     git ls-remote --tags --refs "$REPO" 2>/dev/null \
         | awk -F/ '{print $3}' \
-        | grep -E '^[vV]?[0-9]+([.][0-9]+){1,3}([._-][0-9A-Za-z.-]+)?$' \
-        | sort -Vr \
-        | head -n 10
+        | grep -E '^[vV]?[0-9]+([.][0-9]+){2}$' \
+        | awk -F. '{ major=$1; sub(/^[vV]/, "", major); if (major > 1 || (major == 1 && $2 >= 11)) print }' \
+        | sort -Vr
 }
 
 choose_tag() {
@@ -240,7 +240,7 @@ choose_tag() {
         return 1
     fi
 
-    printf "\n最近发布的版本：\n"
+    printf "\n所有 1.11.0 及以上正式版本：\n"
     for i in "${!tags[@]}"; do
         printf "  %2d) %s\n" "$((i + 1))" "${tags[$i]}"
     done
@@ -248,14 +248,21 @@ choose_tag() {
     read -r -p "输入序号或完整版本号：" choice
     [[ "$choice" == "0" ]] && return 2
 
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#tags[@]} )); then
-        tag="${tags[$((choice - 1))]}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#tags[@]} )); then
+        tag="${tags[$((10#$choice - 1))]}"
     else
         tag="$choice"
     fi
 
-    if ! git ls-remote --exit-code --tags "$REPO" "refs/tags/$tag" >/dev/null 2>&1; then
-        error "官方仓库中没有版本标签：$tag"
+    local found=0 released_tag
+    for released_tag in "${tags[@]}"; do
+        if [[ "$released_tag" == "$tag" ]]; then
+            found=1
+            break
+        fi
+    done
+    if (( found == 0 )); then
+        error "请选择列表中的 1.11.0 或更高正式版本：$tag"
         return 1
     fi
     install_or_switch tag "$tag"
@@ -266,7 +273,7 @@ choose_version() {
         printf "\n%b选择要安装或切换的版本%b\n" "$CYAN" "$RESET"
         printf "  1) release  稳定版（推荐，可持续更新）\n"
         printf "  2) staging  测试版（更新快，可能不稳定）\n"
-        printf "  3) 指定正式版本（例如 1.18.0，锁定版本）\n"
+        printf "  3) 选择正式版本（1.11.0 及以上可随意切换）\n"
         printf "  0) 返回\n\n"
         read -r -p "请选择 [0-3]：" choice
         case "$choice" in

@@ -5,11 +5,14 @@
 
 set -u
 
-SCRIPT_VERSION="1.4.5"
-SCRIPT_BUILD=2026080313
+SCRIPT_VERSION="1.4.6"
+SCRIPT_BUILD=2026080314
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"
+LIGHT_NODE_HEAP_MB="${ST_LIGHT_HEAP_MB:-384}"
+LIGHT_UV_THREADS="${ST_LIGHT_UV_THREADS:-2}"
+LIGHT_NICE_LEVEL="${ST_LIGHT_NICE_LEVEL:-10}"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
 EXTERNAL_ST_DIR="${EXTERNAL_STORAGE_ROOT}/SillyTavern"
 DEFAULT_ST_DIR="${HOME}/SillyTavern"
@@ -323,7 +326,9 @@ install_dependencies() {
     repair_termux_repo || return 1
     repair_termux_runtime || return 1
 
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git nodejs-lts nano curl || return 1
+    # Git 仅在安装/切换/更新时运行；Node.js 使用 Termux 官方的轻量 LTS 二进制包。
+    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        git nodejs-lts curl || return 1
     # 安装软件包后再次检查动态库，处理镜像切换造成的 OpenSSL/libngtcp2 版本不一致。
     if https_runtime_broken; then
         repair_termux_runtime 1 || return 1
@@ -353,10 +358,12 @@ install_dependencies() {
 }
 
 install_node_modules() {
-    info "正在安装 SillyTavern Node.js 依赖..."
+    local effective_node_options="${NODE_OPTIONS:---max-old-space-size=${LIGHT_NODE_HEAP_MB}}"
+    info "正在以低内存、单任务模式安装 SillyTavern 运行依赖..."
     (
         cd "$ST_DIR" || exit 1
         export NODE_ENV=production
+        export npm_config_jobs="${npm_config_jobs:-1}"
         local npm_args=(
             --no-save --no-audit --no-fund --loglevel=error --no-progress
             --omit=dev --ignore-scripts
@@ -365,8 +372,17 @@ install_node_modules() {
         if [[ "$ST_DIR" == "$EXTERNAL_STORAGE_ROOT"* ]]; then
             npm_args+=(--no-bin-links)
         fi
-        npm install "${npm_args[@]}"
+        if command -v nice >/dev/null 2>&1; then
+            NODE_OPTIONS="$effective_node_options" \
+                nice -n "$LIGHT_NICE_LEVEL" npm install "${npm_args[@]}"
+        else
+            NODE_OPTIONS="$effective_node_options" npm install "${npm_args[@]}"
+        fi
     )
+    local install_status=$?
+    npm cache clean --force >/dev/null 2>&1 || true
+    apt-get clean >/dev/null 2>&1 || true
+    return "$install_status"
 }
 
 has_sillytavern_files() {
@@ -538,106 +554,13 @@ install_or_switch() {
     ok "SillyTavern $ref 安装完成。"
 }
 
-filter_supported_tags() {
-    grep -E '^[vV]?[0-9]+([.][0-9]+){2}$' \
-        | awk -F. '{ major=$1; sub(/^[vV]/, "", major); if (major > 1 || (major == 1 && ($2 > 13 || ($2 == 13 && $3 >= 4)))) print }' \
-        | sort -Vr \
-        | awk '!seen[$0]++'
-}
-
-list_release_tags() {
-    local tags=""
-
-    # 首次运行时可能还没安装 git，因此优先使用安装指令已有的 curl。
-    if command -v curl >/dev/null 2>&1; then
-        tags="$(
-            curl -fsSL --retry 2 --connect-timeout 15 --max-time 30 \
-                -H 'Accept: application/vnd.github+json' \
-                -H 'User-Agent: SillyTavern-Termux-Manager' \
-                'https://api.github.com/repos/SillyTavern/SillyTavern/tags?per_page=100' 2>/dev/null \
-                | awk -F'"' '/"name"[[:space:]]*:/ {print $4}' \
-                | filter_supported_tags
-        )"
-    fi
-
-    # GitHub API 不通时再尝试 Git，并强制 HTTP/1.1 提高 Termux 网络兼容性。
-    if [[ -z "$tags" ]] && command -v git >/dev/null 2>&1; then
-        tags="$(
-            git -c http.version=HTTP/1.1 ls-remote --tags --refs "$REPO" 2>/dev/null \
-                | awk -F/ '{print $3}' \
-                | filter_supported_tags
-        )"
-    fi
-
-    # 固定保留起始版本 1.13.4 和常用版本 1.14.0，接口暂时异常时仍可选择。
-    tags="$(printf '%s\n%s\n%s\n' "$tags" '1.13.4' '1.14.0' | filter_supported_tags)"
-
-    if [[ -n "$tags" ]]; then
-        printf '%s\n' "$tags"
-    fi
-}
-
-choose_tag() {
-    info "正在读取官方版本列表..."
-    local tags=() choice tag i
-    mapfile -t tags < <(list_release_tags)
-
-    if (( ${#tags[@]} == 0 )); then
-        error "未能读取版本列表，请检查网络。"
-        return 1
-    fi
-
-    printf "\n所有 1.13.4 到最新的正式版本：\n"
-    for i in "${!tags[@]}"; do
-        printf "  %2d) %s\n" "$((i + 1))" "${tags[$i]}"
-    done
-    printf "   0) 返回\n\n"
-    read_timed_choice "输入序号或完整版本号（自动确认）："
-    choice="$MENU_INPUT"
-    [[ "$choice" == "0" ]] && return 2
-
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#tags[@]} )); then
-        tag="${tags[$((10#$choice - 1))]}"
-    else
-        tag="$choice"
-    fi
-
-    local found=0 released_tag
-    for released_tag in "${tags[@]}"; do
-        if [[ "$released_tag" == "$tag" ]]; then
-            found=1
-            break
-        fi
-    done
-    if (( found == 0 )); then
-        error "请选择列表中的 1.13.4 或更高正式版本：$tag"
-        return 1
-    fi
-    install_or_switch tag "$tag"
-}
-
 choose_version() {
-    while true; do
-        printf "\n%b选择要安装或切换的版本%b\n" "$CYAN" "$RESET"
-        printf "  1) release  稳定版（推荐，可持续更新）\n"
-        printf "  2) staging  测试版（更新快，可能不稳定）\n"
-        printf "  3) 选择正式版本（1.13.4 到最新版可随意切换）\n"
-        printf "  4) 固定版本 1.14.0\n"
-        printf "  0) 返回\n\n"
-        read_menu_key "请选择 [0-4]（自动确认）："
-        choice="$MENU_INPUT"
-        case "$choice" in
-            1) install_or_switch branch release; return $? ;;
-            2) install_or_switch branch staging; return $? ;;
-            3) choose_tag; case $? in 0) return 0;; 2) continue;; *) return 1;; esac ;;
-            4) install_or_switch tag 1.14.0; return $? ;;
-            0) return 2 ;;
-            *) warn "请输入 0、1、2、3 或 4。" ;;
-        esac
-    done
+    info "固定安装 SillyTavern 1.14.0（低配置轻量模式）。"
+    install_or_switch tag 1.14.0
 }
 
 start_sillytavern() {
+    local effective_node_options="${NODE_OPTIONS:---max-old-space-size=${LIGHT_NODE_HEAP_MB}}"
     detect_install_dir || true
     if ! has_sillytavern_files; then
         warn "尚未安装 SillyTavern，请先选择版本。"
@@ -651,15 +574,23 @@ start_sillytavern() {
         install_node_modules || return
     fi
 
-    info "即将启动 SillyTavern；停止服务请按 Ctrl+C。"
+    info "即将以轻量模式启动 SillyTavern（Node.js 堆内存 ${LIGHT_NODE_HEAP_MB} MB）；停止服务请按 Ctrl+C。"
     if command -v termux-open-url >/dev/null 2>&1; then
         ( sleep 6; termux-open-url "http://127.0.0.1:8000" >/dev/null 2>&1 || true ) &
     fi
-    if [[ "$ST_DIR" == "$EXTERNAL_STORAGE_ROOT"* ]]; then
-        # 外置存储通常不支持可执行权限，因此直接由 Termux 内部的 Node.js 启动。
-        (cd "$ST_DIR" && node server.js)
+    # 不调用 start.sh，避免每次启动都重复执行 npm install。
+    if command -v nice >/dev/null 2>&1; then
+        (cd "$ST_DIR" && \
+            NODE_ENV=production \
+            NODE_OPTIONS="$effective_node_options" \
+            UV_THREADPOOL_SIZE="$LIGHT_UV_THREADS" \
+            nice -n "$LIGHT_NICE_LEVEL" node server.js)
     else
-        (cd "$ST_DIR" && bash start.sh)
+        (cd "$ST_DIR" && \
+            NODE_ENV=production \
+            NODE_OPTIONS="$effective_node_options" \
+            UV_THREADPOOL_SIZE="$LIGHT_UV_THREADS" \
+            node server.js)
     fi
 }
 
@@ -675,17 +606,9 @@ update_sillytavern() {
         return 1
     fi
 
-    local branch
-    branch="$(git -C "$ST_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-    if [[ -z "$branch" ]]; then
-        warn "当前是锁定的正式版本，不能直接更新。请使用菜单 2 切换到新版本或 release。"
-        return 1
-    fi
-
-    info "正在更新 $branch..."
-    git -C "$ST_DIR" pull --rebase --autostash origin "$branch" || return 1
+    info "固定版 1.14.0 不升级代码，正在重新校验轻量运行依赖..."
     install_node_modules || return 1
-    ok "更新完成。"
+    ok "固定版 1.14.0 运行依赖已修复。"
 }
 
 show_version() {
@@ -736,8 +659,8 @@ main_menu() {
             printf "  酒馆目录：未检测到\n\n"
         fi
         printf "  1) 启动 SillyTavern\n"
-        printf "  2) 安装 / 切换版本\n"
-        printf "  3) 更新当前版本\n"
+        printf "  2) 安装 / 切换到固定版 1.14.0\n"
+        printf "  3) 修复固定版运行依赖\n"
         printf "  4) 查看当前版本\n"
         if auto_menu_enabled; then
             printf "  5) 关闭 Termux 自动菜单 [当前：开]\n"

@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.3.1"
-SCRIPT_BUILD=2026080304
+SCRIPT_VERSION="1.3.2"
+SCRIPT_BUILD=2026080305
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
@@ -70,6 +70,42 @@ read_timed_choice() {
 
 is_termux() {
     [[ -n "${PREFIX:-}" && "$PREFIX" == *com.termux* ]] || command -v pkg >/dev/null 2>&1
+}
+
+termux_package_available() {
+    apt-cache show "$1" 2>/dev/null | grep -q '^Package:'
+}
+
+set_termux_main_repo() {
+    local repo_line="$1"
+    local sources="$PREFIX/etc/apt/sources.list"
+    mkdir -p "$(dirname "$sources")"
+    if [[ -f "$sources" && ! -f "${sources}.st-manager.bak" ]]; then
+        cp "$sources" "${sources}.st-manager.bak" || true
+    fi
+    printf '%s\n' "$repo_line" > "$sources"
+    apt-get clean >/dev/null 2>&1 || true
+    apt-get update -y
+}
+
+repair_termux_repo() {
+    termux_package_available git && termux_package_available nodejs-lts && return 0
+
+    warn "当前 Termux 软件源缺少基础软件包，正在自动修复软件源..."
+
+    # 中国大陆优先使用 Termux 官方镜像列表中的清华 TUNA 镜像。
+    set_termux_main_repo \
+        'deb https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main stable main' || true
+    termux_package_available git && termux_package_available nodejs-lts && return 0
+
+    warn "清华镜像不可用，正在尝试 Termux 官方源..."
+    set_termux_main_repo \
+        'deb https://packages.termux.dev/apt/termux-main stable main' || true
+    termux_package_available git && termux_package_available nodejs-lts && return 0
+
+    error "软件源修复失败。你可能使用了已停止维护的 Google Play 版 Termux。"
+    error "请改用 F-Droid 或 Termux GitHub Releases 提供的新版 Termux。"
+    return 1
 }
 
 install_manager() {
@@ -197,10 +233,14 @@ install_dependencies() {
     fi
 
     info "正在更新软件源并安装依赖：git、Node.js 24 LTS、npm、nano、curl..."
-    pkg update -y || return 1
-    # Termux 的 nodejs-lts 当前为 Node.js 24；显式安装 npm，避免新版
-    # nodejs-lts 不再内置 npm 时 SillyTavern 无法安装依赖。
-    pkg install -y git nodejs-lts npm nano curl || return 1
+    pkg update -y || warn "原软件源更新失败，将尝试自动修复。"
+    repair_termux_repo || return 1
+
+    pkg install -y git nodejs-lts nano curl || return 1
+    # 新版 nodejs-lts 将 npm 拆分为独立软件包；旧版可能仍内置 npm。
+    if termux_package_available npm; then
+        pkg install -y npm || return 1
+    fi
 
     if [[ "$(getconf LONG_BIT 2>/dev/null || echo 64)" == "32" ]]; then
         warn "检测到 32 位 Android，额外安装 esbuild。"

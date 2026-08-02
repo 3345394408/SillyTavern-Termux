@@ -253,6 +253,9 @@ list_release_tags() {
         )"
     fi
 
+    # 固定保留用户指定的 1.11.4，即使版本接口暂时只返回部分标签也能选择。
+    tags="$(printf '%s\n%s\n' "$tags" '1.11.4' | filter_supported_tags)"
+
     if [[ -n "$tags" ]]; then
         printf '%s\n' "$tags"
     fi
@@ -302,14 +305,16 @@ choose_version() {
         printf "  1) release  稳定版（推荐，可持续更新）\n"
         printf "  2) staging  测试版（更新快，可能不稳定）\n"
         printf "  3) 选择正式版本（1.11.0 及以上可随意切换）\n"
+        printf "  4) 固定版本 1.11.4\n"
         printf "  0) 返回\n\n"
-        read -r -p "请选择 [0-3]：" choice
+        read -r -p "请选择 [0-4]：" choice
         case "$choice" in
             1) install_or_switch branch release; return $? ;;
             2) install_or_switch branch staging; return $? ;;
             3) choose_tag; case $? in 0) return 0;; 2) continue;; *) return 1;; esac ;;
+            4) install_or_switch tag 1.11.4; return $? ;;
             0) return 2 ;;
-            *) warn "请输入 0、1、2 或 3。" ;;
+            *) warn "请输入 0、1、2、3 或 4。" ;;
         esac
     done
 }

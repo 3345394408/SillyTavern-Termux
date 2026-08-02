@@ -5,10 +5,11 @@
 
 set -u
 
-SCRIPT_VERSION="1.4.2"
-SCRIPT_BUILD=2026080310
+SCRIPT_VERSION="1.4.3"
+SCRIPT_BUILD=2026080311
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
+SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
 EXTERNAL_ST_DIR="${EXTERNAL_STORAGE_ROOT}/SillyTavern"
 DEFAULT_ST_DIR="${HOME}/SillyTavern"
@@ -146,6 +147,28 @@ install_manager() {
     fi
 }
 
+download_self_update() {
+    local destination="$1" cache_key
+    cache_key="$(date +%s%N 2>/dev/null || date +%s)"
+
+    # GitHub Contents API 返回仓库当前文件，避免 raw.githubusercontent.com 的缓存。
+    if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+        -H 'Accept: application/vnd.github.raw' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        -H 'Cache-Control: no-cache, no-store' \
+        -H 'Pragma: no-cache' \
+        "${SELF_UPDATE_API}&cache=${cache_key}" -o "$destination" \
+        && grep -q '^SCRIPT_BUILD=[0-9][0-9]*$' "$destination"; then
+        return 0
+    fi
+
+    # API 暂时不可用时回退到 raw 地址。
+    curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+        -H 'Cache-Control: no-cache, no-store' \
+        -H 'Pragma: no-cache' \
+        "${SELF_UPDATE_URL}?cache=${cache_key}" -o "$destination"
+}
+
 check_self_update() {
     local force="${1:-0}"
     if [[ "${ST_MANAGER_SKIP_UPDATE:-0}" == "1" && "$force" != "1" ]]; then
@@ -157,24 +180,23 @@ check_self_update() {
         return 0
     fi
 
-    local tmp remote_build source_file
+    local tmp remote_build remote_version
     tmp="$(mktemp "${TMPDIR:-${PREFIX:-/tmp}/tmp}/st-manager-update.XXXXXX" 2>/dev/null)" || {
         UPDATE_STATUS="检查失败（无法创建临时文件）"
         return 0
     }
 
-    if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
-        -H 'Cache-Control: no-cache' \
-        "${SELF_UPDATE_URL}?v=$(date +%s)" -o "$tmp"; then
+    if ! download_self_update "$tmp"; then
         rm -f "$tmp"
         UPDATE_STATUS="检查失败（网络错误）"
         return 0
     fi
 
     remote_build="$(sed -n 's/^SCRIPT_BUILD=\([0-9][0-9]*\)$/\1/p' "$tmp" | head -n 1)"
-    source_file="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+    remote_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"$/\1/p' "$tmp" | head -n 1)"
 
     if [[ ! "$remote_build" =~ ^[0-9]+$ ]] \
+        || [[ -z "$remote_version" ]] \
         || [[ "$(head -n 1 "$tmp")" != '#!/usr/bin/env bash' ]] \
         || ! bash -n "$tmp"; then
         rm -f "$tmp"
@@ -183,24 +205,24 @@ check_self_update() {
         return 0
     fi
 
-    # 只升级不降级；构建号相同时也比较内容，避免遗漏小修复。
-    if (( 10#$remote_build > 10#$SCRIPT_BUILD )) \
-        || { (( 10#$remote_build == 10#$SCRIPT_BUILD )) && ! cmp -s "$tmp" "$source_file"; }; then
+    # 先识别本地和远程版本；只有远程构建号更大时才更新。
+    if (( 10#$remote_build > 10#$SCRIPT_BUILD )); then
+        UPDATE_STATUS="发现新版本 v${SCRIPT_VERSION} → v${remote_version}"
         mkdir -p "$BIN_DIR"
         cp "$tmp" "${MANAGER}.update" || { rm -f "$tmp"; return 0; }
         chmod 755 "${MANAGER}.update"
         mv -f "${MANAGER}.update" "$MANAGER"
         rm -f "$tmp"
-        ok "管理器已自动更新，正在重新启动..."
+        ok "管理器已从 v${SCRIPT_VERSION} 自动更新到 v${remote_version}，正在重新启动..."
         export ST_MANAGER_SKIP_UPDATE=1
         exec "$MANAGER" "${SELF_UPDATE_ARGS[@]}"
     fi
 
     rm -f "$tmp"
     if (( 10#$remote_build < 10#$SCRIPT_BUILD )); then
-        UPDATE_STATUS="本地版本较新 v${SCRIPT_VERSION}"
+        UPDATE_STATUS="本地 v${SCRIPT_VERSION} / 远程 v${remote_version}（不降级）"
     else
-        UPDATE_STATUS="已是最新 v${SCRIPT_VERSION}"
+        UPDATE_STATUS="本地 v${SCRIPT_VERSION} / 远程 v${remote_version}（已是最新）"
     fi
 }
 

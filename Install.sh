@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.4.3"
-SCRIPT_BUILD=2026080311
+SCRIPT_VERSION="1.4.4"
+SCRIPT_BUILD=2026080312
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"
@@ -111,26 +111,49 @@ repair_termux_repo() {
     return 1
 }
 
-repair_termux_runtime() {
-    if command -v curl >/dev/null 2>&1 && curl --version >/dev/null 2>&1; then
+https_runtime_broken() {
+    local git_https="${PREFIX:-}/libexec/git-core/git-remote-https" output=""
+
+    if ! command -v curl >/dev/null 2>&1 || ! curl --version >/dev/null 2>&1; then
         return 0
     fi
 
-    warn "检测到 Termux 软件包版本混用，curl/SSL 无法启动，正在完整升级修复..."
+    if [[ -x "$git_https" ]]; then
+        output="$("$git_https" 2>&1 || true)"
+        if grep -Eqi 'CANNOT LINK EXECUTABLE|cannot locate symbol|library .* not found' <<< "$output"; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+repair_termux_runtime() {
+    local force="${1:-0}"
+    if [[ "$force" != "1" ]] && ! https_runtime_broken; then
+        return 0
+    fi
+
+    warn "检测到 Termux 的 Git/curl/OpenSSL 软件包版本混用，正在完整升级修复..."
     apt-get update -y || {
         set_termux_main_repo \
             'deb https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main stable main' || return 1
     }
+    dpkg --configure -a || true
+    DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y || return 1
     DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y curl openssl libngtcp2 \
-        || DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl \
+    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y \
+        openssl libngtcp2 libnghttp3 libcurl curl git \
+        || DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            openssl libngtcp2 libnghttp3 libcurl curl git \
         || return 1
+    hash -r
 
-    if ! curl --version >/dev/null 2>&1; then
-        error "curl/SSL 修复失败。请更换新版 Termux 后重试。"
+    if https_runtime_broken; then
+        error "Git/curl/OpenSSL 修复失败。请更换新版 Termux 后重试。"
         return 1
     fi
-    ok "Termux 软件包和 curl/SSL 已修复。"
+    ok "Termux 的 Git/curl/OpenSSL 软件包已同步修复。"
 }
 
 install_manager() {
@@ -301,6 +324,10 @@ install_dependencies() {
     repair_termux_runtime || return 1
 
     DEBIAN_FRONTEND=noninteractive apt-get install -y git nodejs-lts nano curl || return 1
+    # 安装软件包后再次检查动态库，处理镜像切换造成的 OpenSSL/libngtcp2 版本不一致。
+    if https_runtime_broken; then
+        repair_termux_runtime 1 || return 1
+    fi
     # 新版 nodejs-lts 将 npm 拆分为独立软件包；旧版可能仍内置 npm。
     if termux_package_available npm; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y npm || return 1

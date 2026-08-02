@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.4.0"
-SCRIPT_BUILD=2026080308
+SCRIPT_VERSION="1.4.1"
+SCRIPT_BUILD=2026080309
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
@@ -108,6 +108,28 @@ repair_termux_repo() {
     error "软件源修复失败。你可能使用了已停止维护的 Google Play 版 Termux。"
     error "请改用 F-Droid 或 Termux GitHub Releases 提供的新版 Termux。"
     return 1
+}
+
+repair_termux_runtime() {
+    if command -v curl >/dev/null 2>&1 && curl --version >/dev/null 2>&1; then
+        return 0
+    fi
+
+    warn "检测到 Termux 软件包版本混用，curl/SSL 无法启动，正在完整升级修复..."
+    apt-get update -y || {
+        set_termux_main_repo \
+            'deb https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main stable main' || return 1
+    }
+    DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y curl openssl libngtcp2 \
+        || DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl \
+        || return 1
+
+    if ! curl --version >/dev/null 2>&1; then
+        error "curl/SSL 修复失败。请更换新版 Termux 后重试。"
+        return 1
+    fi
+    ok "Termux 软件包和 curl/SSL 已修复。"
 }
 
 install_manager() {
@@ -252,18 +274,19 @@ install_dependencies() {
     fi
 
     info "正在更新软件源并安装依赖：git、Node.js 24 LTS、npm、nano、curl..."
-    pkg update -y || warn "原软件源更新失败，将尝试自动修复。"
+    apt-get update -y || warn "原软件源更新失败，将尝试自动修复。"
     repair_termux_repo || return 1
+    repair_termux_runtime || return 1
 
-    pkg install -y git nodejs-lts nano curl || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y git nodejs-lts nano curl || return 1
     # 新版 nodejs-lts 将 npm 拆分为独立软件包；旧版可能仍内置 npm。
     if termux_package_available npm; then
-        pkg install -y npm || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y npm || return 1
     fi
 
     if [[ "$(getconf LONG_BIT 2>/dev/null || echo 64)" == "32" ]]; then
         warn "检测到 32 位 Android，额外安装 esbuild。"
-        pkg install -y esbuild || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y esbuild || return 1
     fi
 
     local major

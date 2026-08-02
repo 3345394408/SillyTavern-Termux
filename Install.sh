@@ -10,6 +10,7 @@ ST_DIR="${HOME}/SillyTavern"
 BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
 BASHRC="${HOME}/.bashrc"
+BASH_PROFILE="${HOME}/.bash_profile"
 STATE_DIR="${HOME}/.config/st-manager"
 INITIALIZED="${STATE_DIR}/initialized"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
@@ -69,6 +70,19 @@ if [[ $- == *i* ]] && [[ -t 0 ]] && [[ -x "$HOME/.local/bin/st-manager" ]] && [[
 fi
 # <<< SillyTavern Termux Manager <<<
 EOF
+
+    # Termux 可能以 login shell 启动；login bash 默认不会主动读取 ~/.bashrc。
+    # 让 ~/.bash_profile 加载它，保证重新打开 Termux 时菜单能够出现。
+    touch "$BASH_PROFILE"
+    if ! grep -Fq '# SillyTavern: load .bashrc' "$BASH_PROFILE"; then
+        cat >> "$BASH_PROFILE" <<'EOF'
+
+# SillyTavern: load .bashrc
+if [[ -f "$HOME/.bashrc" ]]; then
+    . "$HOME/.bashrc"
+fi
+EOF
+    fi
     ok "已设置：以后打开 Termux 会自动进入管理菜单。"
 }
 

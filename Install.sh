@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.1.0"
-SCRIPT_BUILD=2026080301
+SCRIPT_VERSION="1.2.0"
+SCRIPT_BUILD=2026080302
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 ST_DIR="${HOME}/SillyTavern"
@@ -17,6 +17,7 @@ BASH_PROFILE="${HOME}/.bash_profile"
 ZSHRC="${HOME}/.zshrc"
 STATE_DIR="${HOME}/.config/st-manager"
 INITIALIZED="${STATE_DIR}/initialized"
+INSTALL_DIR_FILE="${STATE_DIR}/install-dir"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
 AUTO_END="# <<< SillyTavern Termux Manager <<<"
 RUN_FROM_INSTALLER=0
@@ -33,8 +34,35 @@ warn()  { printf "%b%s%b\n" "$YELLOW" "$*" "$RESET"; }
 error() { printf "%b%s%b\n" "$RED" "$*" "$RESET" >&2; }
 
 pause_menu() {
-    printf "\n按回车键返回菜单..."
-    read -r _ || true
+    printf "\n按任意键返回菜单..."
+    IFS= read -rsn1 _ || true
+    printf "\n"
+}
+
+read_menu_key() {
+    local prompt="$1" key=""
+    printf "%s" "$prompt"
+    IFS= read -rsn1 key || true
+    printf "%s\n" "$key"
+    MENU_INPUT="$key"
+}
+
+read_timed_choice() {
+    local prompt="$1" key="" value=""
+    printf "%s" "$prompt"
+    IFS= read -rsn1 key || true
+    value="$key"
+    printf "%s" "$key"
+
+    # 等待很短时间接收两位序号或完整版本号，不需要按回车确认。
+    while IFS= read -rsn1 -t 0.6 key; do
+        [[ "$key" == $'\n' || "$key" == $'\r' ]] && break
+        [[ "$key" =~ ^[0-9vV.]$ ]] || break
+        value+="$key"
+        printf "%s" "$key"
+    done
+    printf "\n"
+    MENU_INPUT="$value"
 }
 
 is_termux() {
@@ -199,8 +227,63 @@ install_node_modules() {
     )
 }
 
+has_sillytavern_files() {
+    [[ -f "$ST_DIR/server.js" && -f "$ST_DIR/package.json" && -f "$ST_DIR/start.sh" ]]
+}
+
 valid_repo() {
-    [[ -d "$ST_DIR/.git" ]]
+    has_sillytavern_files \
+        && command -v git >/dev/null 2>&1 \
+        && git -C "$ST_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+remember_install_dir() {
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$ST_DIR" > "$INSTALL_DIR_FILE"
+}
+
+detect_install_dir() {
+    local saved="" candidate="" found=""
+
+    if [[ -f "$INSTALL_DIR_FILE" ]]; then
+        IFS= read -r saved < "$INSTALL_DIR_FILE" || true
+        if [[ -n "$saved" ]]; then
+            candidate="$ST_DIR"
+            ST_DIR="$saved"
+            if has_sillytavern_files; then
+                return 0
+            fi
+            ST_DIR="$candidate"
+        fi
+    fi
+
+    for candidate in "$ST_DIR" "$HOME/SillyTavern" "$HOME/sillytavern"; do
+        ST_DIR="$candidate"
+        if has_sillytavern_files; then
+            remember_install_dir
+            return 0
+        fi
+    done
+
+    # 兼容安装在其他子目录或由旧脚本创建的目录。
+    found="$(
+        find "$HOME" -maxdepth 3 -type f -name server.js 2>/dev/null \
+            | while IFS= read -r candidate; do
+                candidate="${candidate%/server.js}"
+                if [[ -f "$candidate/start.sh" && -f "$candidate/package.json" ]]; then
+                    printf '%s\n' "$candidate"
+                    break
+                fi
+            done
+    )"
+    if [[ -n "$found" ]]; then
+        ST_DIR="$found"
+        remember_install_dir
+        return 0
+    fi
+
+    ST_DIR="$HOME/SillyTavern"
+    return 1
 }
 
 stash_changes() {
@@ -227,8 +310,9 @@ install_or_switch() {
     local kind="$1" ref="$2"
 
     install_dependencies || return 1
+    detect_install_dir || true
 
-    if [[ -e "$ST_DIR" && ! -d "$ST_DIR/.git" ]]; then
+    if [[ -e "$ST_DIR" ]] && ! valid_repo; then
         error "$ST_DIR 已存在，但不是 Git 仓库。请先将该目录改名后重试。"
         return 1
     fi
@@ -263,6 +347,7 @@ install_or_switch() {
     fi
 
     install_node_modules || return 1
+    remember_install_dir
     ok "SillyTavern $ref 安装完成。"
 }
 
@@ -320,7 +405,8 @@ choose_tag() {
         printf "  %2d) %s\n" "$((i + 1))" "${tags[$i]}"
     done
     printf "   0) 返回\n\n"
-    read -r -p "输入序号或完整版本号：" choice
+    read_timed_choice "输入序号或完整版本号（自动确认）："
+    choice="$MENU_INPUT"
     [[ "$choice" == "0" ]] && return 2
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#tags[@]} )); then
@@ -351,7 +437,8 @@ choose_version() {
         printf "  3) 选择正式版本（1.11.0 及以上可随意切换）\n"
         printf "  4) 固定版本 1.11.4\n"
         printf "  0) 返回\n\n"
-        read -r -p "请选择 [0-4]：" choice
+        read_menu_key "请选择 [0-4]（自动确认）："
+        choice="$MENU_INPUT"
         case "$choice" in
             1) install_or_switch branch release; return $? ;;
             2) install_or_switch branch staging; return $? ;;
@@ -364,9 +451,11 @@ choose_version() {
 }
 
 start_sillytavern() {
-    if ! valid_repo; then
+    detect_install_dir || true
+    if ! has_sillytavern_files; then
         warn "尚未安装 SillyTavern，请先选择版本。"
         choose_version || return
+        detect_install_dir || true
     fi
 
     info "即将启动 SillyTavern；停止服务请按 Ctrl+C。"
@@ -377,8 +466,14 @@ start_sillytavern() {
 }
 
 update_sillytavern() {
+    detect_install_dir || true
     if ! valid_repo; then
-        error "尚未安装 SillyTavern。"
+        if has_sillytavern_files; then
+            error "已找到 SillyTavern，但它不是 Git 安装，无法自动更新代码。"
+            info "安装目录：$ST_DIR"
+        else
+            error "尚未安装 SillyTavern。"
+        fi
         return 1
     fi
 
@@ -396,7 +491,8 @@ update_sillytavern() {
 }
 
 show_version() {
-    if ! valid_repo; then
+    detect_install_dir || true
+    if ! has_sillytavern_files; then
         warn "尚未安装 SillyTavern。"
         return
     fi
@@ -406,8 +502,8 @@ show_version() {
     commit="$(git -C "$ST_DIR" rev-parse --short HEAD 2>/dev/null || true)"
     printf "安装目录：%s\n" "$ST_DIR"
     printf "管理器版本：%s（构建 %s）\n" "$SCRIPT_VERSION" "$SCRIPT_BUILD"
-    printf "当前版本：%s\n" "${tag:-${branch:-未知}}"
-    printf "Git 提交：%s\n" "$commit"
+    printf "当前版本：%s\n" "${tag:-${branch:-手动安装}}"
+    printf "Git 提交：%s\n" "${commit:-无}"
     printf "Node.js：%s\n" "$(node -v 2>/dev/null || echo 未安装)"
 }
 
@@ -438,7 +534,8 @@ main_menu() {
             printf "  5) 开启 Termux 自动菜单 [当前：关]\n"
         fi
         printf "  0) 退出到 Termux 命令行\n\n"
-        read -r -p "请选择 [0-5]：" choice
+        read_menu_key "请选择 [0-5]（自动确认）："
+        choice="$MENU_INPUT"
         case "$choice" in
             1) start_sillytavern; pause_menu ;;
             2) choose_version; pause_menu ;;

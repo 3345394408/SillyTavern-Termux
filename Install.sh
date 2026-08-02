@@ -3,8 +3,8 @@
 # SillyTavern 1.14.0 Termux 轻量安装与管理脚本
 set -u
 
-SCRIPT_VERSION="1.6.0"
-SCRIPT_BUILD=2026080316
+SCRIPT_VERSION="1.6.1"
+SCRIPT_BUILD=2026080317
 ST_VERSION="1.14.0"
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
@@ -21,9 +21,6 @@ ZSHRC="${HOME}/.zshrc"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
 AUTO_END="# <<< SillyTavern Termux Manager <<<"
 
-# 运行时采用均衡设置：避免过低的内存/线程限制导致启动失败或响应迟缓。
-# 低内存设备可在启动前执行：export ST_NODE_HEAP_MB=512
-NODE_HEAP_MB="${ST_NODE_HEAP_MB:-768}"
 UPDATE_STATUS="等待检查"
 SELF_UPDATE_ARGS=()
 
@@ -238,15 +235,14 @@ has_sillytavern() {
 }
 
 install_node_modules() {
-    local install_options="--max-old-space-size=${ST_INSTALL_HEAP_MB:-512}" status
+    local status
     info "正在安装 SillyTavern 运行依赖（低并发安装）..."
     (
         cd "$ST_DIR" || exit 1
         export NODE_ENV=production
         export npm_config_jobs="${npm_config_jobs:-1}"
-        NODE_OPTIONS="$install_options" \
-            npm install --no-save --no-audit --no-fund --no-progress \
-                --loglevel=error --omit=dev
+        npm install --no-save --no-audit --no-fund --no-progress \
+            --loglevel=error --omit=dev
     )
     status=$?
     npm cache clean --force >/dev/null 2>&1 || true
@@ -287,7 +283,6 @@ install_fixed_version() {
 }
 
 start_sillytavern() {
-    local effective_options="${NODE_OPTIONS:---max-old-space-size=${NODE_HEAP_MB}}"
     if ! has_sillytavern; then
         warn "未检测到 SillyTavern，将自动安装固定版 ${ST_VERSION}。"
         install_fixed_version || return
@@ -304,7 +299,7 @@ start_sillytavern() {
         return
     fi
 
-    info "正在以均衡模式启动：Node.js 内存上限 ${NODE_HEAP_MB} MB。"
+    info "正在以标准模式启动（不限制 Node.js 内存）。"
     if command -v termux-open-url >/dev/null 2>&1; then
         (
             # 等服务器真正可访问后再打开，避免低配置手机启动较慢时出现空白页。
@@ -317,7 +312,7 @@ start_sillytavern() {
             done
         ) &
     fi
-    (cd "$ST_DIR" && NODE_ENV=production NODE_OPTIONS="$effective_options" node server.js)
+    (cd "$ST_DIR" && NODE_ENV=production node server.js)
 }
 
 show_status() {
@@ -330,7 +325,7 @@ show_status() {
     printf "酒馆版本：%s\n" "${tag:-未安装或非标签版本}"
     printf "Git 提交：%s\n" "${commit:-无}"
     printf "Node.js：%s\n" "$(node -v 2>/dev/null || echo 未安装)"
-    printf "运行模式：均衡（Node.js 内存上限 %s MB）\n" "$NODE_HEAP_MB"
+    printf "运行模式：标准（未限制 Node.js 内存）\n"
     printf "管理器：v%s（构建 %s）\n" "$SCRIPT_VERSION" "$SCRIPT_BUILD"
 }
 

@@ -5,8 +5,8 @@
 
 set -u
 
-SCRIPT_VERSION="1.4.1"
-SCRIPT_BUILD=2026080309
+SCRIPT_VERSION="1.4.2"
+SCRIPT_BUILD=2026080310
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"

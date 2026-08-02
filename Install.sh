@@ -15,6 +15,7 @@ STATE_DIR="${HOME}/.config/st-manager"
 INITIALIZED="${STATE_DIR}/initialized"
 AUTO_BEGIN="# >>> SillyTavern Termux Manager >>>"
 AUTO_END="# <<< SillyTavern Termux Manager <<<"
+RUN_FROM_INSTALLER=0
 
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
@@ -41,6 +42,7 @@ install_manager() {
     local source_file
     source_file="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
     if [[ "$source_file" != "$MANAGER" ]]; then
+        RUN_FROM_INSTALLER=1
         cp "$source_file" "${MANAGER}.tmp" || return 1
         chmod 755 "${MANAGER}.tmp"
         mv -f "${MANAGER}.tmp" "$MANAGER"
@@ -361,8 +363,9 @@ main() {
     }
     export PATH="$BIN_DIR:$PATH"
 
-    # 仅在首次运行时默认启用；之后尊重菜单中的开关设置。
-    if [[ ! -f "$INITIALIZED" ]]; then
+    # 重新执行下载的 Install.sh 时也会主动修复自动菜单；从已安装的
+    # st-manager 启动时仍尊重用户在菜单中的开关设置。
+    if [[ "$RUN_FROM_INSTALLER" == "1" || ! -f "$INITIALIZED" ]]; then
         enable_auto_menu
         mkdir -p "$STATE_DIR"
         touch "$INITIALIZED"

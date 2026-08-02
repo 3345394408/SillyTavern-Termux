@@ -5,13 +5,14 @@
 
 set -u
 
-SCRIPT_VERSION="1.3.0"
-SCRIPT_BUILD=2026080303
+SCRIPT_VERSION="1.3.1"
+SCRIPT_BUILD=2026080304
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 EXTERNAL_STORAGE_ROOT="/storage/BA73-022B"
-PREFERRED_ST_DIR="${EXTERNAL_STORAGE_ROOT}/SillyTavern"
-ST_DIR="$PREFERRED_ST_DIR"
+EXTERNAL_ST_DIR="${EXTERNAL_STORAGE_ROOT}/SillyTavern"
+DEFAULT_ST_DIR="${HOME}/SillyTavern"
+ST_DIR="$DEFAULT_ST_DIR"
 BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
 BASHRC="${HOME}/.bashrc"
@@ -225,8 +226,15 @@ install_node_modules() {
     (
         cd "$ST_DIR" || exit 1
         export NODE_ENV=production
-        npm install --no-save --no-audit --no-fund --loglevel=error --no-progress \
-            --omit=dev --ignore-scripts --no-bin-links
+        local npm_args=(
+            --no-save --no-audit --no-fund --loglevel=error --no-progress
+            --omit=dev --ignore-scripts
+        )
+        # 仅当识别到既有外置存储安装时禁用 bin 链接；默认 Termux HOME 安装保持标准行为。
+        if [[ "$ST_DIR" == "$EXTERNAL_STORAGE_ROOT"* ]]; then
+            npm_args+=(--no-bin-links)
+        fi
+        npm install "${npm_args[@]}"
     )
 }
 
@@ -289,7 +297,7 @@ detect_install_dir() {
 
     for candidate in \
         "$ST_DIR" \
-        "$PREFERRED_ST_DIR" \
+        "$EXTERNAL_ST_DIR" \
         "$EXTERNAL_STORAGE_ROOT" \
         "$EXTERNAL_STORAGE_ROOT/sillytavern" \
         "$HOME/SillyTavern" \
@@ -318,7 +326,7 @@ detect_install_dir() {
         return 0
     fi
 
-    ST_DIR="$PREFERRED_ST_DIR"
+    ST_DIR="$DEFAULT_ST_DIR"
     return 1
 }
 
@@ -508,8 +516,12 @@ start_sillytavern() {
     if command -v termux-open-url >/dev/null 2>&1; then
         ( sleep 6; termux-open-url "http://127.0.0.1:8000" >/dev/null 2>&1 || true ) &
     fi
-    # 外置存储通常不支持可执行权限，因此直接由 Termux 内部的 Node.js 启动。
-    (cd "$ST_DIR" && node server.js)
+    if [[ "$ST_DIR" == "$EXTERNAL_STORAGE_ROOT"* ]]; then
+        # 外置存储通常不支持可执行权限，因此直接由 Termux 内部的 Node.js 启动。
+        (cd "$ST_DIR" && node server.js)
+    else
+        (cd "$ST_DIR" && bash start.sh)
+    fi
 }
 
 update_sillytavern() {

@@ -3,8 +3,8 @@
 # SillyTavern 1.14.0 Termux 轻量安装与管理脚本
 set -u
 
-SCRIPT_VERSION="1.6.1"
-SCRIPT_BUILD=2026080317
+SCRIPT_VERSION="1.7.0"
+SCRIPT_BUILD=2026080601
 ST_VERSION="1.14.0"
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
@@ -15,6 +15,7 @@ BIN_DIR="${HOME}/.local/bin"
 MANAGER="${BIN_DIR}/st-manager"
 STATE_DIR="${HOME}/.config/st-manager"
 INITIALIZED="${STATE_DIR}/initialized"
+LAN_ACCESS="${STATE_DIR}/lan-access"
 BASHRC="${HOME}/.bashrc"
 BASH_PROFILE="${HOME}/.bash_profile"
 ZSHRC="${HOME}/.zshrc"
@@ -283,6 +284,9 @@ install_fixed_version() {
 }
 
 start_sillytavern() {
+    local lan_ip="" lan_url="" open_url="http://127.0.0.1:8000"
+    local -a server_args=()
+
     if ! has_sillytavern; then
         warn "未检测到 SillyTavern，将自动安装固定版 ${ST_VERSION}。"
         install_fixed_version || return
@@ -294,29 +298,90 @@ start_sillytavern() {
 
     # 已经启动时不要重复创建服务，直接打开页面。
     if curl -fsS --max-time 1 'http://127.0.0.1:8000/' >/dev/null 2>&1; then
-        termux-open-url 'http://127.0.0.1:8000' >/dev/null 2>&1 || true
+        termux-open-url "$open_url" >/dev/null 2>&1 || true
         ok "SillyTavern 已在运行。"
+        if lan_access_enabled; then
+            lan_ip="$(get_lan_ipv4)"
+            if [[ -n "$lan_ip" ]] && curl -fsS --max-time 1 "http://${lan_ip}:8000/" >/dev/null 2>&1; then
+                ok "局域网地址：http://${lan_ip}:8000"
+            else
+                warn "当前进程尚未开放局域网，请先停止后重新启动。"
+            fi
+        fi
         return
     fi
 
-    info "正在以标准模式启动（不限制 Node.js 内存）。"
+    if lan_access_enabled; then
+        # 使用 SillyTavern 自带的监听与白名单参数，不修改用户的 config.yaml。
+        server_args=(--listen --whitelist=false)
+        lan_ip="$(get_lan_ipv4)"
+        if [[ -n "$lan_ip" ]]; then
+            lan_url="http://${lan_ip}:8000"
+            info "正在以局域网开放模式启动：${lan_url}"
+        else
+            info "正在以局域网开放模式启动：http://<手机局域网IP>:8000"
+        fi
+    else
+        info "正在以仅本机模式启动（不限制 Node.js 内存）。"
+    fi
     if command -v termux-open-url >/dev/null 2>&1; then
         (
             # 等服务器真正可访问后再打开，避免低配置手机启动较慢时出现空白页。
             for _ in $(seq 1 120); do
                 if curl -fsS --max-time 1 'http://127.0.0.1:8000/' >/dev/null 2>&1; then
-                    termux-open-url 'http://127.0.0.1:8000' >/dev/null 2>&1 || true
+                    termux-open-url "$open_url" >/dev/null 2>&1 || true
                     exit 0
                 fi
                 sleep 1
             done
         ) &
     fi
-    (cd "$ST_DIR" && NODE_ENV=production node server.js)
+    (cd "$ST_DIR" && NODE_ENV=production node server.js "${server_args[@]}")
+}
+
+get_lan_ipv4() {
+    local ip_bin="" address=""
+
+    if command -v ip >/dev/null 2>&1; then
+        ip_bin="$(command -v ip)"
+    elif [[ -x /system/bin/ip ]]; then
+        ip_bin="/system/bin/ip"
+    fi
+
+    if [[ -n "$ip_bin" ]]; then
+        address="$("$ip_bin" -4 route get 1.1.1.1 2>/dev/null \
+            | sed -n 's/.* src \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+        if [[ -z "$address" ]]; then
+            address="$("$ip_bin" -o -4 addr show scope global 2>/dev/null \
+                | awk '{ sub(/\/.*/, "", $4); if ($4 !~ /^127\./) { print $4; exit } }')"
+        fi
+    fi
+
+    printf '%s' "$address"
+}
+
+lan_access_enabled() {
+    [[ -f "$LAN_ACCESS" ]]
+}
+
+enable_lan_access() {
+    mkdir -p "$STATE_DIR"
+    touch "$LAN_ACCESS"
+    ok "已开启局域网访问；下次启动 SillyTavern 时生效。"
+    warn "安全提示：未启用账号或认证时，任何能连接手机 8000 端口的设备都可以访问酒馆。"
+}
+
+disable_lan_access() {
+    rm -f "$LAN_ACCESS"
+    ok "已关闭局域网访问；下次启动将恢复仅本机访问。"
+}
+
+toggle_lan_access() {
+    if lan_access_enabled; then disable_lan_access; else enable_lan_access; fi
 }
 
 show_status() {
-    local tag="" commit=""
+    local tag="" commit="" lan_ip=""
     if has_sillytavern; then
         tag="$(git -C "$ST_DIR" describe --tags --exact-match 2>/dev/null || true)"
         commit="$(git -C "$ST_DIR" rev-parse --short HEAD 2>/dev/null || true)"
@@ -325,7 +390,14 @@ show_status() {
     printf "酒馆版本：%s\n" "${tag:-未安装或非标签版本}"
     printf "Git 提交：%s\n" "${commit:-无}"
     printf "Node.js：%s\n" "$(node -v 2>/dev/null || echo 未安装)"
-    printf "运行模式：标准（未限制 Node.js 内存）\n"
+    if lan_access_enabled; then
+        lan_ip="$(get_lan_ipv4)"
+        [[ -n "$lan_ip" ]] || lan_ip="<手机局域网IP>"
+        printf "运行模式：局域网开放（未限制 Node.js 内存）\n"
+        printf "访问地址：http://%s:8000\n" "$lan_ip"
+    else
+        printf "运行模式：仅本机（未限制 Node.js 内存）\n"
+    fi
     printf "管理器：v%s（构建 %s）\n" "$SCRIPT_VERSION" "$SCRIPT_BUILD"
 }
 
@@ -412,17 +484,23 @@ main_menu() {
         else
             printf "  4) 开启自动菜单 [当前：关]\n"
         fi
-        printf "  5) 检查管理器更新\n"
+        if lan_access_enabled; then
+            printf "  5) 关闭局域网访问 [当前：开]\n"
+        else
+            printf "  5) 开启局域网访问 [当前：关]\n"
+        fi
+        printf "  6) 检查管理器更新\n"
         printf "  0) 退出到命令行\n\n"
-        read_key "请选择 [0-5]（自动确认）："
+        read_key "请选择 [0-6]（自动确认）："
         case "$MENU_INPUT" in
             1) start_sillytavern; pause_menu ;;
             2) install_fixed_version; pause_menu ;;
             3) show_status; pause_menu ;;
             4) toggle_auto_menu; pause_menu ;;
-            5) manual_self_update; pause_menu ;;
+            5) toggle_lan_access; pause_menu ;;
+            6) manual_self_update; pause_menu ;;
             0) break ;;
-            *) warn "请输入 0 到 5。"; sleep 1 ;;
+            *) warn "请输入 0 到 6。"; sleep 1 ;;
         esac
     done
 }

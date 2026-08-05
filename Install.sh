@@ -3,8 +3,8 @@
 # SillyTavern 1.14.0 Termux 轻量安装与管理脚本
 set -u
 
-SCRIPT_VERSION="1.7.0"
-SCRIPT_BUILD=2026080601
+SCRIPT_VERSION="1.7.1"
+SCRIPT_BUILD=2026080602
 ST_VERSION="1.14.0"
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
@@ -296,6 +296,10 @@ start_sillytavern() {
         install_node_modules || return
     fi
 
+    if lan_access_enabled; then
+        ensure_lan_whitelist || return
+    fi
+
     # 已经启动时不要重复创建服务，直接打开页面。
     if curl -fsS --max-time 1 'http://127.0.0.1:8000/' >/dev/null 2>&1; then
         termux-open-url "$open_url" >/dev/null 2>&1 || true
@@ -312,8 +316,8 @@ start_sillytavern() {
     fi
 
     if lan_access_enabled; then
-        # 使用 SillyTavern 自带的监听与白名单参数，不修改用户的 config.yaml。
-        server_args=(--listen --whitelist=false)
+        # 使用 SillyTavern 自带的监听与白名单，避免触发非安全配置检查。
+        server_args=(--listen --whitelist=true)
         lan_ip="$(get_lan_ipv4)"
         if [[ -n "$lan_ip" ]]; then
             lan_url="http://${lan_ip}:8000"
@@ -342,6 +346,23 @@ start_sillytavern() {
 get_lan_ipv4() {
     local ip_bin="" address=""
 
+    # Android 上 ip 命令可能受限；优先让已安装的 Node.js 查询网络接口。
+    if command -v node >/dev/null 2>&1; then
+        address="$(node -e '
+            const os = require("node:os");
+            const addresses = Object.entries(os.networkInterfaces())
+                .flatMap(([name, items]) => (items || []).map(item => ({ name, ...item })))
+                .filter(item => item.family === "IPv4" && !item.internal);
+            const privateIp = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/;
+            const selected = addresses.find(item => /^(wlan|wifi)/i.test(item.name))
+                || addresses.find(item => privateIp.test(item.address))
+                || addresses[0];
+            if (selected) process.stdout.write(selected.address);
+        ' 2>/dev/null || true)"
+    fi
+
+    [[ -n "$address" ]] && { printf '%s' "$address"; return; }
+
     if command -v ip >/dev/null 2>&1; then
         ip_bin="$(command -v ip)"
     elif [[ -x /system/bin/ip ]]; then
@@ -360,6 +381,45 @@ get_lan_ipv4() {
     printf '%s' "$address"
 }
 
+ensure_lan_whitelist() {
+    local whitelist_file="${ST_DIR}/whitelist.txt"
+    local tmp_file="${whitelist_file}.st-manager.tmp" entry
+    local -a lan_entries=(
+        "::1"
+        "127.0.0.1"
+        "10.0.0.0/8"
+        "172.16.0.0/12"
+        "192.168.0.0/16"
+    )
+
+    if [[ ! -f "$whitelist_file" ]]; then
+        : > "$tmp_file" || { error "无法创建局域网白名单。"; return 1; }
+        if [[ -f "${ST_DIR}/config.yaml" ]]; then
+            awk '
+                /^whitelist:[[:space:]]*$/ { inside=1; next }
+                inside && /^[^[:space:]]/ { exit }
+                inside && /^[[:space:]]*-/ {
+                    line=$0
+                    sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+                    sub(/[[:space:]]*#.*/, "", line)
+                    if (line != "") print line
+                }
+            ' "${ST_DIR}/config.yaml" >> "$tmp_file"
+        fi
+        mv -f "$tmp_file" "$whitelist_file" || {
+            rm -f "$tmp_file"
+            error "无法保存局域网白名单。"
+            return 1
+        }
+    fi
+
+    for entry in "${lan_entries[@]}"; do
+        grep -Fqx -- "$entry" "$whitelist_file" 2>/dev/null \
+            || printf '%s\n' "$entry" >> "$whitelist_file" \
+            || { error "无法更新局域网白名单。"; return 1; }
+    done
+}
+
 lan_access_enabled() {
     [[ -f "$LAN_ACCESS" ]]
 }
@@ -368,7 +428,7 @@ enable_lan_access() {
     mkdir -p "$STATE_DIR"
     touch "$LAN_ACCESS"
     ok "已开启局域网访问；下次启动 SillyTavern 时生效。"
-    warn "安全提示：未启用账号或认证时，任何能连接手机 8000 端口的设备都可以访问酒馆。"
+    warn "安全提示：未启用账号或认证时，局域网中的设备都可以访问酒馆。"
 }
 
 disable_lan_access() {

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# SillyTavern 1.14.0 Termux 轻量安装与管理脚本
+# SillyTavern 1.18.0 Termux 轻量安装与管理脚本
 set -u
 
-SCRIPT_VERSION="1.7.1"
-SCRIPT_BUILD=2026080602
-ST_VERSION="1.14.0"
+SCRIPT_VERSION="1.8.0"
+SCRIPT_BUILD=2026090101
+ST_VERSION="1.18.0"
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"

@@ -3,9 +3,10 @@
 # SillyTavern 1.18.0 Termux 轻量安装与管理脚本
 set -u
 
-SCRIPT_VERSION="1.8.0"
-SCRIPT_BUILD=2026090101
+SCRIPT_VERSION="1.9.0"
+SCRIPT_BUILD=2026090102
 ST_VERSION="1.18.0"
+MIN_NODE_MAJOR=20
 REPO="https://github.com/SillyTavern/SillyTavern.git"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"
@@ -24,6 +25,7 @@ AUTO_END="# <<< SillyTavern Termux Manager <<<"
 
 UPDATE_STATUS="等待检查"
 SELF_UPDATE_ARGS=()
+MENU_INPUT=""
 
 if [[ -t 1 ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
@@ -43,20 +45,19 @@ pause_menu() {
 }
 
 read_key() {
-    local prompt="$1" key=""
-    printf "%s" "$prompt"
-    IFS= read -rsn1 key || true
-    printf "%s\n" "$key"
-    MENU_INPUT="$key"
+    printf "%s" "$1"
+    IFS= read -rsn1 MENU_INPUT || MENU_INPUT=""
+    printf "%s\n" "$MENU_INPUT"
 }
 
 # ---------- 管理器自动更新 ----------
 
 download_self_update() {
     local destination="$1" cache_key
+    local -a curl_args=(-fsSL --retry 2 --connect-timeout 10 --max-time 30)
     cache_key="$(date +%s%N 2>/dev/null || date +%s)"
 
-    if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+    if curl "${curl_args[@]}" \
         -H 'Accept: application/vnd.github.raw' \
         -H 'X-GitHub-Api-Version: 2022-11-28' \
         -H 'Cache-Control: no-cache, no-store' \
@@ -65,7 +66,7 @@ download_self_update() {
         return 0
     fi
 
-    curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+    curl "${curl_args[@]}" \
         -H 'Cache-Control: no-cache, no-store' \
         "${SELF_UPDATE_URL}?cache=${cache_key}" -o "$destination"
 }
@@ -219,8 +220,8 @@ install_dependencies() {
     fi
 
     major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-    if (( major != 24 )); then
-        error "需要 Node.js 24.x，当前版本：$(node -v 2>/dev/null || echo 未安装)"
+    if (( major < MIN_NODE_MAJOR )); then
+        error "需要 Node.js ${MIN_NODE_MAJOR} 或更高版本，当前版本：$(node -v 2>/dev/null || echo 未安装)"
         return 1
     fi
     command -v npm >/dev/null 2>&1 || {
@@ -284,7 +285,7 @@ install_fixed_version() {
 }
 
 start_sillytavern() {
-    local lan_ip="" lan_url="" open_url="http://127.0.0.1:8000"
+    local lan_ip="" open_url="http://127.0.0.1:8000"
     local -a server_args=()
 
     if ! has_sillytavern; then
@@ -320,8 +321,7 @@ start_sillytavern() {
         server_args=(--listen --whitelist=true)
         lan_ip="$(get_lan_ipv4)"
         if [[ -n "$lan_ip" ]]; then
-            lan_url="http://${lan_ip}:8000"
-            info "正在以局域网开放模式启动：${lan_url}"
+            info "正在以局域网开放模式启动：http://${lan_ip}:8000"
         else
             info "正在以局域网开放模式启动：http://<手机局域网IP>:8000"
         fi
@@ -331,7 +331,7 @@ start_sillytavern() {
     if command -v termux-open-url >/dev/null 2>&1; then
         (
             # 等服务器真正可访问后再打开，避免低配置手机启动较慢时出现空白页。
-            for _ in $(seq 1 120); do
+            for ((waited = 0; waited < 120; waited++)); do
                 if curl -fsS --max-time 1 'http://127.0.0.1:8000/' >/dev/null 2>&1; then
                     termux-open-url "$open_url" >/dev/null 2>&1 || true
                     exit 0
@@ -424,20 +424,17 @@ lan_access_enabled() {
     [[ -f "$LAN_ACCESS" ]]
 }
 
-enable_lan_access() {
+toggle_lan_access() {
+    if lan_access_enabled; then
+        rm -f "$LAN_ACCESS"
+        ok "已关闭局域网访问；下次启动将恢复仅本机访问。"
+        return
+    fi
+
     mkdir -p "$STATE_DIR"
     touch "$LAN_ACCESS"
     ok "已开启局域网访问；下次启动 SillyTavern 时生效。"
     warn "安全提示：未启用账号或认证时，局域网中的设备都可以访问酒馆。"
-}
-
-disable_lan_access() {
-    rm -f "$LAN_ACCESS"
-    ok "已关闭局域网访问；下次启动将恢复仅本机访问。"
-}
-
-toggle_lan_access() {
-    if lan_access_enabled; then disable_lan_access; else enable_lan_access; fi
 }
 
 show_status() {

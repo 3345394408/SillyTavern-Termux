@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 
-# SillyTavern 1.18.0 Termux 轻量安装与管理脚本
+# SillyTavern Termux 轻量安装与版本管理脚本
 set -u
 
-SCRIPT_VERSION="1.9.0"
-SCRIPT_BUILD=2026090102
-ST_VERSION="1.18.0"
+SCRIPT_VERSION="1.10.0"
+SCRIPT_BUILD=2026092301
+ST_VERSION="1.14.0"
 MIN_NODE_MAJOR=20
 REPO="https://github.com/SillyTavern/SillyTavern.git"
+ST_RELEASE_API="https://api.github.com/repos/SillyTavern/SillyTavern/releases/latest"
 SELF_UPDATE_URL="https://raw.githubusercontent.com/3345394408/SillyTavern-Termux/main/Install.sh"
 SELF_UPDATE_API="https://api.github.com/repos/3345394408/SillyTavern-Termux/contents/Install.sh?ref=main"
 
@@ -230,7 +231,7 @@ install_dependencies() {
     }
 }
 
-# ---------- SillyTavern 固定版 ----------
+# ---------- SillyTavern 版本安装 ----------
 
 has_sillytavern() {
     [[ -f "$ST_DIR/server.js" && -f "$ST_DIR/package.json" && -f "$ST_DIR/public/index.html" ]]
@@ -252,8 +253,42 @@ install_node_modules() {
     return "$status"
 }
 
-install_fixed_version() {
+get_latest_version() (
+    set -o pipefail
+    curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' "$ST_RELEASE_API" \
+        | node -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+                try {
+                    const release = JSON.parse(input);
+                    if (release.draft !== false || release.prerelease !== false
+                        || !/^v?\d+\.\d+\.\d+$/.test(release.tag_name || "")) {
+                        process.exitCode = 1;
+                        return;
+                    }
+                    process.stdout.write(release.tag_name);
+                } catch {
+                    process.exitCode = 1;
+                }
+            });
+        '
+)
+
+install_version() {
+    local version="$1"
     install_dependencies || return 1
+
+    if [[ "$version" == "latest" ]]; then
+        info "正在查询 SillyTavern 最新正式版本..."
+        version="$(get_latest_version)" || {
+            error "无法获取最新版本，请检查网络后重试，或选择安装 ${ST_VERSION}。"
+            return 1
+        }
+    fi
 
     if [[ -e "$ST_DIR" && ! -d "$ST_DIR" ]]; then
         error "$ST_DIR 已存在但不是目录。"
@@ -265,23 +300,23 @@ install_fixed_version() {
     fi
 
     if [[ ! -d "$ST_DIR/.git" ]]; then
-        info "正在浅克隆固定版 SillyTavern ${ST_VERSION}..."
+        info "正在浅克隆 SillyTavern ${version}..."
         git -c core.fileMode=false -c core.symlinks=false clone \
-            --depth 1 --branch "$ST_VERSION" "$REPO" "$ST_DIR" || return 1
+            --depth 1 --branch "$version" "$REPO" "$ST_DIR" || return 1
     else
-        info "正在切换到固定版 SillyTavern ${ST_VERSION}..."
+        info "正在切换到 SillyTavern ${version}..."
+        git -C "$ST_DIR" fetch --depth 1 origin \
+            "refs/tags/${version}:refs/tags/${version}" || return 1
         if ! git -C "$ST_DIR" diff --quiet || ! git -C "$ST_DIR" diff --cached --quiet; then
             git -C "$ST_DIR" stash push -m "st-manager backup $(date '+%F %T')" || return 1
             warn "原有代码修改已保存在 git stash；用户数据没有删除。"
         fi
-        git -C "$ST_DIR" fetch --depth 1 origin \
-            "refs/tags/${ST_VERSION}:refs/tags/${ST_VERSION}" || return 1
-        git -C "$ST_DIR" checkout --detach "$ST_VERSION" || return 1
+        git -C "$ST_DIR" checkout --detach "refs/tags/${version}" || return 1
     fi
 
     git -C "$ST_DIR" config core.fileMode false || true
     install_node_modules || return 1
-    ok "SillyTavern ${ST_VERSION} 已安装，用户数据保持不变。"
+    ok "SillyTavern ${version} 已安装，用户数据保持不变。"
 }
 
 start_sillytavern() {
@@ -289,8 +324,9 @@ start_sillytavern() {
     local -a server_args=()
 
     if ! has_sillytavern; then
-        warn "未检测到 SillyTavern，将自动安装固定版 ${ST_VERSION}。"
-        install_fixed_version || return
+        warn "未检测到 SillyTavern，请先选择安装版本。"
+        version_menu || return
+        has_sillytavern || return 0
     fi
     if [[ ! -d "$ST_DIR/node_modules" ]]; then
         install_dependencies || return
@@ -524,17 +560,33 @@ manual_self_update() {
 
 # ---------- 菜单 ----------
 
+version_menu() {
+    while true; do
+        printf "\n安装 / 更新 / 修复 SillyTavern\n\n"
+        printf "  1) 更新至最新版本\n"
+        printf "  2) 安装 %s 版本\n" "$ST_VERSION"
+        printf "  0) 返回主菜单\n\n"
+        read_key "请选择 [0-2]（自动确认）："
+        case "$MENU_INPUT" in
+            1) install_version latest; return $? ;;
+            2) install_version "$ST_VERSION"; return $? ;;
+            0|"") return 0 ;;
+            *) warn "请输入 0 到 2。" ;;
+        esac
+    done
+}
+
 main_menu() {
     while true; do
         clear 2>/dev/null || true
         printf "%b========================================\n" "$CYAN"
-        printf "  SillyTavern %s Termux 管理器\n" "$ST_VERSION"
+        printf "  SillyTavern Termux 管理器\n"
         printf "  管理器 v%s\n" "$SCRIPT_VERSION"
         printf "========================================%b\n" "$RESET"
         printf "脚本更新：%s\n" "$UPDATE_STATUS"
         printf "酒馆状态：%s\n\n" "$(has_sillytavern && echo 已安装 || echo 未安装)"
         printf "  1) 启动 SillyTavern\n"
-        printf "  2) 安装 / 修复固定版 %s\n" "$ST_VERSION"
+        printf "  2) 安装 / 更新 / 修复\n"
         printf "  3) 查看状态\n"
         if auto_menu_enabled; then
             printf "  4) 关闭自动菜单 [当前：开]\n"
@@ -551,7 +603,7 @@ main_menu() {
         read_key "请选择 [0-6]（自动确认）："
         case "$MENU_INPUT" in
             1) start_sillytavern; pause_menu ;;
-            2) install_fixed_version; pause_menu ;;
+            2) version_menu; pause_menu ;;
             3) show_status; pause_menu ;;
             4) toggle_auto_menu; pause_menu ;;
             5) toggle_lan_access; pause_menu ;;
